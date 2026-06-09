@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Instant Vote</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1a1a1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #ffffff;
+    --bg2: #f5f5f4;
+    --bg3: #eeede9;
+    --text: #1a1a1a;
+    --text2: #6b6b68;
+    --text3: #9b9b97;
+    --border: rgba(0,0,0,0.1);
+    --border2: rgba(0,0,0,0.18);
+    --orange: #e97316;
+    --orange-bg: #fff7ed;
+    --orange-border: #fed7aa;
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1a;
+      --bg2: #252523;
+      --bg3: #2e2e2c;
+      --text: #f0efe9;
+      --text2: #9b9b97;
+      --text3: #6b6b68;
+      --border: rgba(255,255,255,0.1);
+      --border2: rgba(255,255,255,0.18);
+      --orange-bg: #2a1a09;
+      --orange-border: #7c3a10;
+    }
+  }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; min-height: 100dvh; }
+
+  /* PAGE ROUTING */
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* NAV ADMIN */
+  #page-admin { padding-bottom: 80px; }
+  .topbar { position: sticky; top: 0; z-index: 100; background: var(--bg); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 8px; height: 52px; }
+  .topbar h1 { font-size: 17px; font-weight: 600; flex: 1; letter-spacing: -0.3px; }
+  .topbar-actions { display: flex; gap: 6px; align-items: center; }
+
+  .bottom-bar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--border); padding: 10px 16px; display: flex; gap: 8px; z-index: 100; }
+
+  /* BUTTONS */
+  button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: 14px; color: var(--text); border-radius: var(--radius-sm); transition: background 0.15s, opacity 0.15s; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--border2); background: var(--bg2); font-size: 13px; font-weight: 500; white-space: nowrap; }
+  .btn:hover { background: var(--bg3); }
+  .btn:active { opacity: 0.7; }
+  .btn-primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .btn-primary:hover { opacity: 0.85; background: var(--text); }
+  .btn-sm { padding: 5px 9px; font-size: 12px; }
+  .btn-icon { padding: 6px; border: 1px solid var(--border); background: var(--bg2); }
+  .btn-icon:hover { background: var(--bg3); }
+  .btn-orange { background: var(--orange); color: white; border-color: var(--orange); }
+  .btn-orange:hover { opacity: 0.9; background: var(--orange); }
+  .btn-danger { background: #dc2626; color: white; border-color: #dc2626; }
+
+  /* QUESTIONS LIST */
+  .questions-list { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .add-question { width: 100%; padding: 12px; border: 1.5px dashed var(--border2); background: var(--bg2); border-radius: var(--radius); font-size: 14px; color: var(--text2); display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .add-question:hover { border-color: var(--text3); background: var(--bg3); }
+
+  /* QUESTION CARD */
+  .q-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: border-color 0.2s; }
+  .q-card.voting { border: 2.5px solid var(--orange); background: var(--orange-bg); }
+  .q-card.dragging { opacity: 0.4; }
+  .q-card.drag-over { border-color: var(--orange); box-shadow: 0 0 0 2px var(--orange-border); }
+
+  .q-card-header { padding: 12px 14px; display: flex; align-items: center; gap: 8px; }
+  .q-card-header.reorder-handle { cursor: grab; }
+  .q-title { font-size: 15px; font-weight: 500; flex: 1; }
+  .q-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+  .q-card-body { padding: 0 14px 12px; }
+  .q-edit-area textarea { width: 100%; min-height: 100px; padding: 8px 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; font-size: 14px; color: var(--text); resize: vertical; }
+  .q-edit-area textarea:focus { outline: none; border-color: var(--text3); }
+  .q-edit-actions { margin-top: 8px; display: flex; gap: 6px; justify-content: flex-end; }
+
+  /* VOTE MODE */
+  .option-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .option-row:last-child { border-bottom: none; }
+  .option-text { flex: 1; font-size: 14px; }
+  .option-stats { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+  .option-bar-wrap { width: 60px; height: 4px; background: var(--bg3); border-radius: 2px; }
+  .option-bar { height: 4px; background: var(--orange); border-radius: 2px; transition: width 0.4s ease; }
+  .vote-total { margin-top: 10px; font-size: 13px; color: var(--text2); text-align: right; }
+
+  /* RESULT MODE */
+  .result-options { display: flex; flex-direction: column; gap: 6px; }
+  .result-row { display: flex; align-items: center; gap: 10px; }
+  .result-label { flex: 1; font-size: 14px; }
+  .result-pct { font-size: 13px; font-weight: 600; color: var(--orange); min-width: 36px; text-align: right; }
+  .result-count { font-size: 12px; color: var(--text3); min-width: 28px; text-align: right; }
+  .result-bar-wrap { flex: 1; max-width: 100px; height: 4px; background: var(--bg3); border-radius: 2px; }
+  .result-bar { height: 4px; background: var(--orange); border-radius: 2px; }
+  .result-meta { margin-top: 10px; font-size: 12px; color: var(--text3); border-top: 1px solid var(--border); padding-top: 8px; display: flex; justify-content: space-between; }
+
+  /* REORDER MODE */
+  .reorder-item { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; display: flex; align-items: center; gap: 10px; cursor: grab; user-select: none; transition: transform 0.15s, box-shadow 0.15s; }
+  .reorder-item:active { cursor: grabbing; }
+  .reorder-item.drag-active { opacity: 0.35; }
+  .reorder-item.insert-before { border-top: 2.5px solid var(--orange); }
+  .reorder-item.insert-after { border-bottom: 2.5px solid var(--orange); }
+
+  /* VOTE PAGE */
+  #page-vote { min-height: 100dvh; display: flex; flex-direction: column; }
+  .vote-container { flex: 1; padding: 32px 20px; max-width: 520px; margin: 0 auto; width: 100%; }
+  .vote-question { font-size: 20px; font-weight: 600; margin-bottom: 24px; line-height: 1.35; }
+  .vote-options { display: flex; flex-direction: column; gap: 10px; }
+  .vote-option { padding: 14px 16px; border: 1.5px solid var(--border2); border-radius: var(--radius); font-size: 15px; background: var(--bg2); text-align: left; width: 100%; transition: border-color 0.15s, background 0.15s; }
+  .vote-option:hover { border-color: var(--orange); background: var(--orange-bg); }
+  .vote-option:active { transform: scale(0.99); }
+
+  .vote-done { display: none; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 12px; text-align: center; padding: 40px 20px; }
+  .vote-done.show { display: flex; }
+  .vote-done .checkmark { font-size: 64px; line-height: 1; }
+  .vote-done h2 { font-size: 22px; font-weight: 600; }
+  .vote-done p { color: var(--text2); font-size: 14px; }
+  .vote-waiting { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 12px; text-align: center; padding: 40px 20px; color: var(--text2); }
+
+  /* DISPLAY PAGE */
+  #page-display { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 20px; }
+  .display-idle { text-align: center; }
+  .display-idle h1 { font-size: 42px; font-weight: 700; letter-spacing: -1.5px; color: var(--text); }
+  .display-idle p { color: var(--text3); font-size: 15px; margin-top: 8px; }
+
+  .display-vote { width: 100%; max-width: 640px; }
+  .display-vote .qr-section { display: flex; align-items: center; gap: 20px; margin-bottom: 24px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .display-vote .qr-section canvas, .display-vote .qr-section img { border-radius: 4px; }
+  .display-vote .qr-info { flex: 1; }
+  .display-vote .qr-info h3 { font-size: 13px; color: var(--text2); margin-bottom: 4px; font-weight: 500; }
+  .display-vote .qr-url { font-size: 14px; font-weight: 600; word-break: break-all; color: var(--orange); }
+  .display-question { font-size: 22px; font-weight: 600; margin-bottom: 16px; line-height: 1.3; }
+  .display-options { display: flex; flex-direction: column; gap: 8px; }
+  .display-option-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .display-option-row:last-child { border-bottom: none; }
+  .display-opt-text { flex: 1; font-size: 15px; }
+  .display-opt-bar-wrap { width: 120px; height: 6px; background: var(--bg3); border-radius: 3px; }
+  .display-opt-bar { height: 6px; background: var(--orange); border-radius: 3px; transition: width 0.5s ease; }
+  .display-opt-stats { font-size: 14px; font-weight: 600; min-width: 80px; text-align: right; }
+  .display-total { margin-top: 12px; font-size: 13px; color: var(--text2); text-align: right; }
+
+  .display-result { width: 100%; max-width: 580px; text-align: center; }
+  .display-result .res-question { font-size: 22px; font-weight: 600; margin-bottom: 8px; line-height: 1.3; }
+  .display-result .res-total { font-size: 14px; color: var(--text2); margin-bottom: 24px; }
+  .donut-wrap { position: relative; width: 280px; height: 280px; margin: 0 auto 20px; }
+  .donut-wrap canvas { position: absolute; top: 0; left: 0; }
+  .donut-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; }
+  .donut-center .dc-count { font-size: 28px; font-weight: 700; line-height: 1; }
+  .donut-center .dc-label { font-size: 12px; color: var(--text3); margin-top: 3px; }
+  .donut-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: center; margin-top: 16px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  /* IMPORT/EXPORT modals */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 200; display: flex; align-items: center; justify-content: center; }
+  .modal-overlay.hidden { display: none; }
+  .modal { background: var(--bg); border-radius: var(--radius); padding: 20px; width: calc(100% - 40px); max-width: 420px; box-shadow: 0 8px 40px rgba(0,0,0,0.18); }
+  .modal h3 { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+  .modal p { font-size: 13px; color: var(--text2); margin-bottom: 14px; line-height: 1.6; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+  /* TOAST */
+  .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 18px; border-radius: 20px; font-size: 13px; z-index: 300; opacity: 0; transition: opacity 0.2s; pointer-events: none; white-space: nowrap; }
+  .toast.show { opacity: 1; }
+
+  svg.icon { display: inline-block; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- MODAL IMPORT -->
+<div class="modal-overlay hidden" id="modal-import">
+  <div class="modal">
+    <h3>Importer des questions</h3>
+    <p>Sélectionnez un fichier XLSX selon le modèle d'import. Les colonnes attendues : <strong>Titre</strong> et <strong>Options</strong> (une par colonne : Option1, Option2…)</p>
+    <input type="file" id="import-file-input" accept=".xlsx,.xls" style="font-size:13px;width:100%;">
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-import')">Annuler</button>
+      <button class="btn btn-primary" onclick="doImport()">Importer</button>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE ADMIN -->
+<div id="page-admin" class="page">
+  <div class="topbar">
+    <h1>Instant Vote</h1>
+    <div class="topbar-actions">
+      <button class="btn btn-sm" onclick="openModal('modal-import')">
+        <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Importer
+      </button>
+      <button class="btn btn-sm" onclick="downloadTemplate()">
+        <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>
+        Modèle
+      </button>
+    </div>
+  </div>
+
+  <div class="questions-list" id="questions-list"></div>
+
+  <div class="bottom-bar">
+    <button class="btn btn-primary" onclick="addQuestion()" style="flex:1;">
+      <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Nouvelle question
+    </button>
+    <button class="btn" id="btn-reorder" onclick="toggleReorder()">
+      <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>
+      Réorganiser
+    </button>
+    <button class="btn" onclick="exportXLSX()">
+      <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Exporter
+    </button>
+  </div>
+</div>
+
+<!-- PAGE VOTE -->
+<div id="page-vote" class="page">
+  <div id="vote-waiting" class="vote-waiting">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.35"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    <p>En attente d'un vote en cours…</p>
+  </div>
+  <div id="vote-form" style="display:none; flex-direction:column; flex:1;">
+    <div class="vote-container">
+      <h2 class="vote-question" id="vote-question-title"></h2>
+      <div class="vote-options" id="vote-options-list"></div>
+    </div>
+  </div>
+  <div class="vote-done" id="vote-done">
+    <div class="checkmark">✅</div>
+    <h2>A voté !</h2>
+    <p>Votre vote a été pris en compte</p>
+  </div>
+</div>
+
+<!-- PAGE DISPLAY -->
+<div id="page-display" class="page">
+  <div id="display-idle" class="display-idle">
+    <h1>Instant Vote</h1>
+    <p>En attente d'un vote…</p>
+  </div>
+  <div id="display-vote-section" style="display:none;" class="display-vote">
+    <div class="qr-section">
+      <canvas id="qr-canvas" width="96" height="96"></canvas>
+      <div class="qr-info">
+        <h3>Pour voter, scannez le QR code ou ouvrez :</h3>
+        <div class="qr-url" id="vote-url-display"></div>
+      </div>
+    </div>
+    <div class="display-question" id="display-question-title"></div>
+    <div class="display-options" id="display-options-list"></div>
+    <div class="display-total" id="display-total"></div>
+  </div>
+  <div id="display-result-section" style="display:none;" class="display-result">
+    <div class="res-question" id="result-question-title"></div>
+    <div class="res-total" id="result-total-count"></div>
+    <div class="donut-wrap">
+      <canvas id="donut-canvas" width="280" height="280"></canvas>
+      <div class="donut-center">
+        <div class="dc-count" id="donut-center-count"></div>
+        <div class="dc-label">votes</div>
+      </div>
+    </div>
+    <div class="donut-legend" id="donut-legend"></div>
+  </div>
+</div>
+
+<script>
+// ---- CONFIG ----
+const BASE = window.location.origin;
+const VOTE_URL = BASE + '/vote';
+
+// ---- ROUTER ----
+function getPage() {
+  const p = window.location.pathname;
+  if (p === '/vote') return 'vote';
+  if (p === '/display') return 'display';
+  return 'admin';
+}
+
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const el = document.getElementById('page-' + name);
+  if (el) el.classList.add('active');
+}
+
+// ---- STATE ----
+let questions = [];
+let activeVote = null;
+let activeSummary = null;
+let reorderMode = false;
+let dragSrc = null;
+
+// ---- SSE ----
+let evtSource = null;
+function connectSSE(channel) {
+  if (evtSource) evtSource.close();
+  evtSource = new EventSource(BASE + '/events/' + channel);
+  evtSource.addEventListener('init', e => {
+    const data = JSON.parse(e.data);
+    if (channel === 'admin') {
+      questions = data.questions || [];
+      activeVote = data.activeVote;
+      activeSummary = data.activeSummary;
+      renderAdmin();
+    } else if (channel === 'display') {
+      handleDisplayState(data);
+    } else if (channel === 'vote') {
+      handleVoteState(data);
+    }
+  });
+  evtSource.addEventListener('questions', e => {
+    questions = JSON.parse(e.data);
+    if (!reorderMode) renderAdmin();
+  });
+  evtSource.addEventListener('voteStart', e => {
+    const data = JSON.parse(e.data);
+    activeVote = { questionId: data.question.id };
+    activeSummary = data.summary;
+    const idx = questions.findIndex(q => q.id === data.question.id);
+    if (idx !== -1) questions[idx] = data.question;
+    if (channel === 'admin') renderAdmin();
+    else if (channel === 'display') showDisplayVote(data.summary);
+    else if (channel === 'vote') showVoteForm(data.summary);
+  });
+  evtSource.addEventListener('voteUpdate', e => {
+    activeSummary = JSON.parse(e.data);
+    if (channel === 'admin') updateVoteCard(activeSummary);
+    else if (channel === 'display') updateDisplayVote(activeSummary);
+  });
+  evtSource.addEventListener('voteEnd', e => {
+    const data = JSON.parse(e.data);
+    activeVote = null;
+    activeSummary = null;
+    const qid = data.summary.questionId;
+    const idx = questions.findIndex(q => q.id === qid);
+    if (idx !== -1) { questions[idx].endedAt = new Date().toISOString(); questions[idx].hasResults = true; }
+    if (channel === 'admin') renderAdmin();
+    else if (channel === 'display') showDisplayResult(data.summary);
+    else if (channel === 'vote') showVoteWaiting();
+  });
+  evtSource.onerror = () => setTimeout(() => connectSSE(channel), 3000);
+}
+
+// ---- API ----
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(BASE + path, opts);
+  return r.json();
+}
+
+// ---- ADMIN RENDER ----
+function renderAdmin() {
+  const list = document.getElementById('questions-list');
+  list.innerHTML = '';
+  questions.forEach(q => list.appendChild(buildCard(q)));
+  const addBtn = document.createElement('button');
+  addBtn.className = 'add-question';
+  addBtn.onclick = addQuestion;
+  addBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Ajouter une question`;
+  list.appendChild(addBtn);
+}
+
+function buildCard(q) {
+  const isVoting = activeVote && activeVote.questionId === q.id;
+  const card = document.createElement('div');
+  card.className = 'q-card' + (isVoting ? ' voting' : '');
+  card.dataset.id = q.id;
+
+  if (isVoting && activeSummary) {
+    card.innerHTML = buildVotingCardHTML(q, activeSummary);
+  } else if (q.hasResults && !isVoting) {
+    const summary = null; // will be rendered async
+    card.innerHTML = buildResultCardHTML(q);
+    loadResultCard(card, q.id);
+  } else {
+    card.innerHTML = buildNormalCardHTML(q);
+  }
+  return card;
+}
+
+function buildNormalCardHTML(q) {
+  return `
+    <div class="q-card-header">
+      <span class="q-title">${esc(q.title || 'Sans titre')}</span>
+      <div class="q-actions">
+        <button class="btn-icon btn-sm btn" title="Éditer" onclick="editCard('${q.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="btn-icon btn-sm btn" title="Mettre au vote" onclick="startVote('${q.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </button>
+        <button class="btn-icon btn-sm btn" title="Supprimer" onclick="deleteQuestion('${q.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function buildVotingCardHTML(q, s) {
+  const optRows = s.options.map(o => `
+    <div class="option-row">
+      <span class="option-text">${esc(o.text)}</span>
+      <div class="option-stats">
+        <div class="option-bar-wrap"><div class="option-bar" style="width:${o.pct}%"></div></div>
+        <span>${o.pct}%</span>
+        <span style="color:var(--text3)">${o.count}</span>
+      </div>
+    </div>`).join('');
+  return `
+    <div class="q-card-header">
+      <span class="q-title">${esc(q.title)}</span>
+      <div class="q-actions">
+        <button class="btn btn-sm btn-danger" onclick="endVote()">
+          <svg class="icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          Fin du vote
+        </button>
+      </div>
+    </div>
+    <div class="q-card-body">
+      ${optRows}
+      <div class="vote-total" id="vote-total-${q.id}">Total : ${s.total} vote${s.total > 1 ? 's' : ''}</div>
+    </div>`;
+}
+
+function buildResultCardHTML(q) {
+  return `
+    <div class="q-card-header">
+      <span class="q-title">${esc(q.title)}</span>
+      <div class="q-actions">
+        <button class="btn btn-sm btn" onclick="editCard('${q.id}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="btn btn-sm btn" title="Remettre au vote" onclick="startVote('${q.id}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </button>
+        <button class="btn-icon btn-sm btn" onclick="deleteQuestion('${q.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="q-card-body" id="result-body-${q.id}">
+      <div style="color:var(--text3);font-size:13px;">Chargement des résultats…</div>
+    </div>`;
+}
+
+async function loadResultCard(card, qid) {
+  try {
+    const summary = await api('GET', `/api/results`);
+    const s = summary[qid];
+    if (!s) return;
+    const body = card.querySelector(`#result-body-${qid}`);
+    if (!body) return;
+    const rows = s.options.map(o => `
+      <div class="result-row">
+        <span class="result-label">${esc(o.text)}</span>
+        <div class="result-bar-wrap"><div class="result-bar" style="width:${o.pct}%"></div></div>
+        <span class="result-pct">${o.pct}%</span>
+        <span class="result-count">${o.count}</span>
+      </div>`).join('');
+    const q = questions.find(q => q.id === qid);
+    const endedAt = q && q.endedAt ? new Date(q.endedAt).toLocaleString('fr-FR') : '';
+    body.innerHTML = `
+      <div class="result-options">${rows}</div>
+      <div class="result-meta">
+        <span>${s.total} vote${s.total > 1 ? 's' : ''}</span>
+        <span>${endedAt}</span>
+      </div>`;
+  } catch (_) {}
+}
+
+function updateVoteCard(s) {
+  if (!s) return;
+  const card = document.querySelector(`.q-card[data-id="${s.questionId}"]`);
+  if (!card) return;
+  s.options.forEach((o, i) => {
+    const rows = card.querySelectorAll('.option-row');
+    if (rows[i]) {
+      const bar = rows[i].querySelector('.option-bar');
+      const stats = rows[i].querySelectorAll('.option-stats span');
+      if (bar) bar.style.width = o.pct + '%';
+      if (stats[0]) stats[0].textContent = o.pct + '%';
+      if (stats[1]) stats[1].textContent = o.count;
+    }
+  });
+  const tot = card.querySelector(`#vote-total-${s.questionId}`);
+  if (tot) tot.textContent = `Total : ${s.total} vote${s.total > 1 ? 's' : ''}`;
+}
+
+// ---- ADMIN ACTIONS ----
+async function addQuestion() {
+  const q = await api('POST', '/api/questions', { title: 'Nouvelle question', options: ['Option A', 'Option B'] });
+  questions.push(q);
+  renderAdmin();
+  setTimeout(() => editCard(q.id), 100);
+}
+
+function editCard(id) {
+  const q = questions.find(q => q.id === id);
+  if (!q) return;
+  const card = document.querySelector(`.q-card[data-id="${id}"]`);
+  if (!card) return;
+  card.innerHTML = `
+    <div class="q-card-header">
+      <input type="text" value="${esc(q.title)}" id="edit-title-${id}" style="flex:1;padding:4px 8px;font-size:15px;font-weight:500;border:1px solid var(--border2);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);">
+    </div>
+    <div class="q-card-body q-edit-area">
+      <textarea id="edit-options-${id}" placeholder="Une option par ligne">${(q.options || []).join('\n')}</textarea>
+      <div class="q-edit-actions">
+        <button class="btn btn-sm" onclick="cancelEdit('${id}')">Annuler</button>
+        <button class="btn btn-sm btn-primary" onclick="saveCard('${id}')">Enregistrer</button>
+      </div>
+    </div>`;
+  document.getElementById(`edit-title-${id}`).focus();
+}
+
+function cancelEdit(id) { renderAdmin(); }
+
+async function saveCard(id) {
+  const title = document.getElementById(`edit-title-${id}`).value.trim();
+  const optionsRaw = document.getElementById(`edit-options-${id}`).value;
+  const options = optionsRaw.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!title) { showToast('Le titre est requis'); return; }
+  await api('PUT', `/api/questions/${id}`, { title, options });
+  const idx = questions.findIndex(q => q.id === id);
+  if (idx !== -1) { questions[idx].title = title; questions[idx].options = options; }
+  renderAdmin();
+}
+
+async function deleteQuestion(id) {
+  if (!confirm('Supprimer cette question ?')) return;
+  await api('DELETE', `/api/questions/${id}`);
+  questions = questions.filter(q => q.id !== id);
+  renderAdmin();
+}
+
+async function startVote(id) {
+  if (activeVote) { showToast('Un vote est déjà en cours'); return; }
+  await api('POST', '/api/vote/start', { questionId: id });
+}
+
+async function endVote() {
+  await api('POST', '/api/vote/end', {});
+}
+
+// ---- REORDER ----
+function toggleReorder() {
+  reorderMode = !reorderMode;
+  const btn = document.getElementById('btn-reorder');
+  if (reorderMode) {
+    btn.style.background = 'var(--orange)';
+    btn.style.color = 'white';
+    btn.style.borderColor = 'var(--orange)';
+    renderReorder();
+  } else {
+    btn.style.background = '';
+    btn.style.color = '';
+    btn.style.borderColor = '';
+    saveReorder();
+    renderAdmin();
+  }
+}
+
+function renderReorder() {
+  const list = document.getElementById('questions-list');
+  list.innerHTML = '';
+  questions.forEach(q => {
+    const item = document.createElement('div');
+    item.className = 'reorder-item';
+    item.draggable = true;
+    item.dataset.id = q.id;
+    item.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.4"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      <span style="font-size:14px;font-weight:500;">${esc(q.title)}</span>`;
+    item.addEventListener('dragstart', onDragStart);
+    item.addEventListener('dragend', onDragEnd);
+    item.addEventListener('dragover', onDragOver);
+    item.addEventListener('dragleave', onDragLeave);
+    item.addEventListener('drop', onDrop);
+    list.appendChild(item);
+  });
+}
+
+function onDragStart(e) {
+  dragSrc = this;
+  this.classList.add('drag-active');
+  e.dataTransfer.effectAllowed = 'move';
+}
+function onDragEnd(e) {
+  this.classList.remove('drag-active');
+  document.querySelectorAll('.reorder-item').forEach(i => {
+    i.classList.remove('insert-before', 'insert-after');
+  });
+}
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  if (this === dragSrc) return;
+  const rect = this.getBoundingClientRect();
+  const mid = rect.top + rect.height / 2;
+  document.querySelectorAll('.reorder-item').forEach(i => i.classList.remove('insert-before', 'insert-after'));
+  if (e.clientY < mid) this.classList.add('insert-before');
+  else this.classList.add('insert-after');
+}
+function onDragLeave(e) {
+  this.classList.remove('insert-before', 'insert-after');
+}
+function onDrop(e) {
+  e.stopPropagation();
+  if (this === dragSrc) return;
+  const list = document.getElementById('questions-list');
+  const before = this.classList.contains('insert-before');
+  this.classList.remove('insert-before', 'insert-after');
+  if (before) list.insertBefore(dragSrc, this);
+  else list.insertBefore(dragSrc, this.nextSibling);
+  // Recompute order
+  questions = Array.from(list.querySelectorAll('.reorder-item')).map(el => questions.find(q => q.id === el.dataset.id)).filter(Boolean);
+}
+
+async function saveReorder() {
+  const order = questions.map(q => q.id);
+  await api('POST', '/api/reorder', { order });
+}
+
+// ---- IMPORT / EXPORT ----
+function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+async function doImport() {
+  const input = document.getElementById('import-file-input');
+  if (!input.files[0]) { showToast('Choisissez un fichier'); return; }
+  const ab = await input.files[0].arrayBuffer();
+  const wb = XLSX.read(ab, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws);
+  let count = 0;
+  for (const row of rows) {
+    const title = row['Titre'] || row['title'] || '';
+    if (!title) continue;
+    const options = [];
+    for (let i = 1; i <= 10; i++) {
+      const v = row[`Option${i}`] || row[`option${i}`] || '';
+      if (v) options.push(String(v).trim());
+    }
+    await api('POST', '/api/questions', { title: String(title).trim(), options });
+    count++;
+  }
+  const data = await api('GET', '/api/state');
+  questions = data.questions || [];
+  renderAdmin();
+  closeModal('modal-import');
+  showToast(`${count} question${count > 1 ? 's' : ''} importée${count > 1 ? 's' : ''}`);
+}
+
+function downloadTemplate() {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['Titre', 'Option1', 'Option2', 'Option3', 'Option4', 'Option5'],
+    ['Question exemple', 'Oui', 'Non', 'Abstention', '', ''],
+    ['Autre question', 'Option A', 'Option B', '', '', '']
+  ]);
+  ws['!cols'] = [{ wch: 35 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 20 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Questions');
+  XLSX.writeFile(wb, 'instant-vote-modele.xlsx');
+}
+
+async function exportXLSX() {
+  const results = await api('GET', '/api/results');
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Questions
+  const qRows = [['ID', 'Titre', 'Options', 'Créée le', 'Votée le']];
+  for (const q of questions) {
+    qRows.push([q.id, q.title, (q.options || []).join(' | '), q.createdAt || '', q.endedAt || '']);
+  }
+  const wsQ = XLSX.utils.aoa_to_sheet(qRows);
+  wsQ['!cols'] = [{ wch: 15 }, { wch: 35 }, { wch: 50 }, { wch: 22 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, wsQ, 'Questions');
+
+  // Sheet 2: Results
+  const rRows = [['Question', 'Option', 'Votes', 'Pourcentage', 'Total', 'Date du vote']];
+  for (const [qid, s] of Object.entries(results)) {
+    const q = questions.find(q => q.id === qid);
+    for (const o of s.options) {
+      rRows.push([s.title, o.text, o.count, o.pct + '%', s.total, q?.endedAt ? new Date(q.endedAt).toLocaleString('fr-FR') : '']);
+    }
+  }
+  const wsR = XLSX.utils.aoa_to_sheet(rRows);
+  wsR['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 8 }, { wch: 12 }, { wch: 8 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, wsR, 'Résultats');
+
+  XLSX.writeFile(wb, 'instant-vote-export.xlsx');
+  showToast('Export téléchargé');
+}
+
+// ---- VOTE PAGE ----
+function showVoteWaiting() {
+  document.getElementById('vote-waiting').style.display = 'flex';
+  document.getElementById('vote-form').style.display = 'none';
+  document.getElementById('vote-done').classList.remove('show');
+}
+
+function showVoteForm(summary) {
+  document.getElementById('vote-waiting').style.display = 'none';
+  document.getElementById('vote-form').style.display = 'flex';
+  document.getElementById('vote-done').classList.remove('show');
+  document.getElementById('vote-question-title').textContent = summary.title;
+  const list = document.getElementById('vote-options-list');
+  list.innerHTML = '';
+  summary.options.forEach((o, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'vote-option';
+    btn.textContent = o.text;
+    btn.onclick = () => castVote(i);
+    list.appendChild(btn);
+  });
+}
+
+async function castVote(optionIndex) {
+  try {
+    await api('POST', '/api/vote/cast', { optionIndex });
+    document.getElementById('vote-form').style.display = 'none';
+    document.getElementById('vote-done').classList.add('show');
+  } catch (_) { showToast('Erreur lors du vote'); }
+}
+
+function handleVoteState(data) {
+  if (data.mode === 'vote' && data.summary) showVoteForm(data.summary);
+  else showVoteWaiting();
+}
+
+// ---- DISPLAY PAGE ----
+const DONUT_COLORS = ['#e97316', '#3b82f6', '#22c55e', '#a855f7', '#ec4899', '#14b8a6', '#f59e0b', '#6366f1'];
+
+function handleDisplayState(data) {
+  if (data.mode === 'vote') showDisplayVote(data.summary);
+  else if (data.mode === 'result') showDisplayResult(data.summary);
+  else showDisplayIdle();
+}
+
+function showDisplayIdle() {
+  document.getElementById('display-idle').style.display = 'block';
+  document.getElementById('display-vote-section').style.display = 'none';
+  document.getElementById('display-result-section').style.display = 'none';
+}
+
+function showDisplayVote(s) {
+  document.getElementById('display-idle').style.display = 'none';
+  document.getElementById('display-vote-section').style.display = 'block';
+  document.getElementById('display-result-section').style.display = 'none';
+  document.getElementById('display-question-title').textContent = s.title;
+  document.getElementById('vote-url-display').textContent = VOTE_URL;
+  // QR code
+  const canvas = document.getElementById('qr-canvas');
+  QRCode.toCanvas(canvas, VOTE_URL, { width: 96, margin: 1, color: { dark: '#1a1a1a', light: '#ffffff' } }, () => {});
+  updateDisplayVote(s);
+}
+
+function updateDisplayVote(s) {
+  const list = document.getElementById('display-options-list');
+  list.innerHTML = '';
+  s.options.forEach(o => {
+    const row = document.createElement('div');
+    row.className = 'display-option-row';
+    row.innerHTML = `
+      <span class="display-opt-text">${esc(o.text)}</span>
+      <div class="display-opt-bar-wrap"><div class="display-opt-bar" style="width:${o.pct}%"></div></div>
+      <span class="display-opt-stats">${o.pct}% <span style="color:var(--text3);font-weight:400;">(${o.count})</span></span>`;
+    list.appendChild(row);
+  });
+  document.getElementById('display-total').textContent = `${s.total} vote${s.total > 1 ? 's' : ''}`;
+}
+
+function showDisplayResult(s) {
+  document.getElementById('display-idle').style.display = 'none';
+  document.getElementById('display-vote-section').style.display = 'none';
+  document.getElementById('display-result-section').style.display = 'block';
+  document.getElementById('result-question-title').textContent = s.title;
+  document.getElementById('result-total-count').textContent = `${s.total} vote${s.total > 1 ? 's' : ''}`;
+  document.getElementById('donut-center-count').textContent = s.total;
+  drawDonut(s);
+}
+
+function drawDonut(s) {
+  const canvas = document.getElementById('donut-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = 280, CX = 140, CY = 140, R = 110, inner = 68;
+  ctx.clearRect(0, 0, W, W);
+  let start = -Math.PI / 2;
+  const data = s.options.filter(o => o.count > 0);
+  if (data.length === 0) return;
+  data.forEach((o, i) => {
+    const angle = (o.count / s.total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(CX, CY);
+    ctx.arc(CX, CY, R, start, start + angle);
+    ctx.closePath();
+    ctx.fillStyle = DONUT_COLORS[i % DONUT_COLORS.length];
+    ctx.fill();
+    start += angle;
+  });
+  // Inner hole
+  ctx.beginPath();
+  ctx.arc(CX, CY, inner, 0, Math.PI * 2);
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  ctx.fillStyle = isDark ? '#1c1c1a' : '#ffffff';
+  ctx.fill();
+  // Legend
+  const legend = document.getElementById('donut-legend');
+  legend.innerHTML = '';
+  s.options.forEach((o, i) => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.innerHTML = `<div class="legend-dot" style="background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></div><span>${esc(o.text)} — ${o.pct}% (${o.count})</span>`;
+    legend.appendChild(item);
+  });
+}
+
+// ---- UTILS ----
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ---- INIT ----
+const page = getPage();
+showPage(page);
+
+if (page === 'admin') {
+  connectSSE('admin');
+} else if (page === 'vote') {
+  connectSSE('vote');
+  // Initial state
+  fetch(BASE + '/api/display').then(r => r.json()).then(handleVoteState);
+} else if (page === 'display') {
+  connectSSE('display');
+}
+
+// PWA
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
