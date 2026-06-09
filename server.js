@@ -119,9 +119,11 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     clients.admin.add(res);
-    // Send current state
     res.write(`event: init\ndata: ${JSON.stringify(getFullState())}\n\n`);
-    req.on('close', () => clients.admin.delete(res));
+    const pingAdmin = setInterval(() => {
+      try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingAdmin); }
+    }, 20000);
+    req.on('close', () => { clients.admin.delete(res); clearInterval(pingAdmin); });
     return;
   }
 
@@ -134,7 +136,10 @@ const server = http.createServer(async (req, res) => {
     });
     clients.display.add(res);
     res.write(`event: init\ndata: ${JSON.stringify(getDisplayState())}\n\n`);
-    req.on('close', () => clients.display.delete(res));
+    const pingDisplay = setInterval(() => {
+      try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingDisplay); }
+    }, 20000);
+    req.on('close', () => { clients.display.delete(res); clearInterval(pingDisplay); });
     return;
   }
 
