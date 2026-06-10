@@ -1,7 +1,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const url = require('url');
 
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data.json');
@@ -27,7 +26,45 @@ function saveState() {
   catch (e) { console.error('Save error:', e.message); }
 }
 
+const SAMPLE_QUESTIONS = [
+  {
+    title: "Comment évaluez-vous cette présentation ?",
+    options: ["Excellente", "Bonne", "Moyenne", "À améliorer"]
+  },
+  {
+    title: "Quel format de réunion préférez-vous ?",
+    options: ["En présentiel", "En visioconférence", "Format hybride", "Peu importe"]
+  },
+  {
+    title: "Quelle est votre priorité pour le prochain trimestre ?",
+    options: ["Croissance commerciale", "Amélioration des processus", "Formation des équipes", "Innovation produit"]
+  },
+  {
+    title: "Êtes-vous favorable à ce projet ?",
+    options: ["Tout à fait favorable", "Plutôt favorable", "Plutôt défavorable", "Tout à fait défavorable"]
+  },
+  {
+    title: "Quand souhaitez-vous tenir la prochaine réunion ?",
+    options: ["Cette semaine", "La semaine prochaine", "Dans 15 jours", "Dans un mois"]
+  }
+];
+
+function initSampleQuestions() {
+  const now = new Date().toISOString();
+  state.questions = SAMPLE_QUESTIONS.map((q, i) => ({
+    id: (Date.now() + i).toString(),
+    title: q.title,
+    options: q.options,
+    createdAt: now,
+    endedAt: null,
+    startedAt: null,
+    hasResults: false
+  }));
+  saveState();
+}
+
 loadState();
+if (state.questions.length === 0) initSampleQuestions();
 
 // --- SSE clients ---
 const clients = { admin: new Set(), display: new Set() };
@@ -103,7 +140,7 @@ const MIME = {
 
 // --- HTTP Server ---
 const server = http.createServer(async (req, res) => {
-  const parsed = url.parse(req.url, true);
+  const parsed = new URL(req.url, 'http://localhost');
   const pathname = parsed.pathname;
   const method = req.method;
 
