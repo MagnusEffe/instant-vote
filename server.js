@@ -9,8 +9,9 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 // --- State ---
 let state = {
   questions: [],
-  activeVote: null, // { questionId, startedAt }
-  votes: {}         // { questionId: { optionIndex: count } }
+  activeVote: null,   // { questionId, startedAt }
+  pinnedResult: null, // questionId manually pinned for display
+  votes: {}           // { questionId: { optionIndex: count } }
 };
 
 function loadState() {
@@ -304,6 +305,21 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, results);
   }
 
+  if (pathname === '/api/display/pin' && method === 'POST') {
+    const body = await parseBody(req);
+    const { questionId } = body;
+    // Toggle : if same question already pinned, unpin
+    if (state.pinnedResult === questionId) {
+      state.pinnedResult = null;
+    } else {
+      state.pinnedResult = questionId || null;
+    }
+    saveState();
+    broadcast('display', 'init', getDisplayState());
+    broadcast('admin', 'pinned', { pinnedResult: state.pinnedResult });
+    return sendJSON(res, 200, { pinnedResult: state.pinnedResult });
+  }
+
   // Route inconnue
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
@@ -313,7 +329,8 @@ function getFullState() {
   return {
     questions: state.questions,
     activeVote: state.activeVote,
-    activeSummary: state.activeVote ? getVoteSummary(state.activeVote.questionId) : null
+    activeSummary: state.activeVote ? getVoteSummary(state.activeVote.questionId) : null,
+    pinnedResult: state.pinnedResult || null
   };
 }
 
@@ -321,11 +338,10 @@ function getDisplayState() {
   if (state.activeVote) {
     return { mode: 'vote', summary: getVoteSummary(state.activeVote.questionId) };
   }
-  // Find most recent result
-  const withResults = state.questions.filter(q => q.hasResults);
-  if (withResults.length > 0) {
-    const last = withResults[withResults.length - 1];
-    return { mode: 'result', summary: getVoteSummary(last.id) };
+  // Pinned result takes priority
+  if (state.pinnedResult) {
+    const s = getVoteSummary(state.pinnedResult);
+    if (s) return { mode: 'result', summary: s };
   }
   return { mode: 'idle' };
 }
