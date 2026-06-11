@@ -11,7 +11,9 @@ let state = {
   questions: [],
   activeVote: null,   // { questionId, startedAt }
   pinnedResult: null, // questionId manually pinned for display
-  votes: {}           // { questionId: { optionIndex: count } }
+  multiVote: false,   // true = plusieurs votes par appareil autorisés
+  votes: {},          // { questionId: { optionIndex: count } }
+  voterIPs: {}        // { questionId: Set<ip> } — non persisté
 };
 
 function loadState() {
@@ -65,6 +67,8 @@ function initSampleQuestions() {
 }
 
 loadState();
+// voterIPs n'est pas persisté — réinitialiser au démarrage
+state.voterIPs = {};
 if (state.questions.length === 0) initSampleQuestions();
 
 // --- SSE clients ---
@@ -256,8 +260,9 @@ const server = http.createServer(async (req, res) => {
     q.startedAt = state.activeVote.startedAt;
     q.endedAt = null;
     q.hasResults = false;
-    // Effacer les votes précédents
+    // Effacer les votes précédents et les IPs enregistrées
     state.votes[questionId] = {};
+    state.voterIPs[questionId] = new Set();
     // Dépingler si cette question était affichée
     if (state.pinnedResult === questionId) state.pinnedResult = null;
     saveState();
@@ -289,6 +294,15 @@ const server = http.createServer(async (req, res) => {
     const { optionIndex } = body;
     if (!state.activeVote) return sendJSON(res, 400, { error: 'No active vote' });
     const { questionId } = state.activeVote;
+    // Contrôle anti-double-vote par IP (mode vote unique)
+    if (!state.multiVote) {
+      const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+      if (!state.voterIPs[questionId]) state.voterIPs[questionId] = new Set();
+      if (state.voterIPs[questionId].has(ip)) {
+        return sendJSON(res, 429, { error: 'already_voted' });
+      }
+      state.voterIPs[questionId].add(ip);
+    }
     if (!state.votes[questionId]) state.votes[questionId] = {};
     state.votes[questionId][optionIndex] = (state.votes[questionId][optionIndex] || 0) + 1;
     saveState();
@@ -311,6 +325,14 @@ const server = http.createServer(async (req, res) => {
       if (q.hasResults) results[q.id] = getVoteSummary(q.id);
     }
     return sendJSON(res, 200, results);
+  }
+
+  if (pathname === '/api/multivote' && method === 'POST') {
+    const body = await parseBody(req);
+    state.multiVote = !!body.enabled;
+    saveState();
+    broadcastAll('settings', { multiVote: state.multiVote });
+    return sendJSON(res, 200, { multiVote: state.multiVote });
   }
 
   if (pathname === '/api/display/pin' && method === 'POST') {
@@ -338,7 +360,8 @@ function getFullState() {
     questions: state.questions,
     activeVote: state.activeVote,
     activeSummary: state.activeVote ? getVoteSummary(state.activeVote.questionId) : null,
-    pinnedResult: state.pinnedResult || null
+    pinnedResult: state.pinnedResult || null,
+    multiVote: state.multiVote || false
   };
 }
 
