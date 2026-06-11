@@ -255,7 +255,11 @@ const server = http.createServer(async (req, res) => {
     state.activeVote = { questionId, startedAt: new Date().toISOString() };
     q.startedAt = state.activeVote.startedAt;
     q.endedAt = null;
-    if (!state.votes[questionId]) state.votes[questionId] = {};
+    q.hasResults = false;
+    // Effacer les votes précédents
+    state.votes[questionId] = {};
+    // Dépingler si cette question était affichée
+    if (state.pinnedResult === questionId) state.pinnedResult = null;
     saveState();
     broadcastAll('voteStart', { question: q, summary: getVoteSummary(questionId) });
     return sendJSON(res, 200, { ok: true });
