@@ -274,9 +274,13 @@ const server = http.createServer(async (req, res) => {
       q.hasResults = true;
     }
     state.activeVote = null;
+    // Épingler automatiquement la question sur l'affichage
+    state.pinnedResult = questionId;
     saveState();
     const summary = getVoteSummary(questionId);
     broadcastAll('voteEnd', { summary });
+    broadcast('admin', 'pinned', { pinnedResult: state.pinnedResult });
+    broadcast('display', 'init', getDisplayState());
     return sendJSON(res, 200, summary);
   }
 
