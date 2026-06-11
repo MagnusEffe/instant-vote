@@ -366,15 +366,15 @@ function getFullState() {
 }
 
 function getDisplayState() {
+  const base = { multiVote: state.multiVote || false };
   if (state.activeVote) {
-    return { mode: 'vote', summary: getVoteSummary(state.activeVote.questionId) };
+    return { ...base, mode: 'vote', summary: getVoteSummary(state.activeVote.questionId) };
   }
-  // Pinned result takes priority
   if (state.pinnedResult) {
     const s = getVoteSummary(state.pinnedResult);
-    if (s) return { mode: 'result', summary: s };
+    if (s) return { ...base, mode: 'result', summary: s };
   }
-  return { mode: 'idle' };
+  return { ...base, mode: 'idle' };
 }
 
 server.listen(PORT, () => {
