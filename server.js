@@ -72,7 +72,7 @@ state.voterIPs = {};
 if (state.questions.length === 0) initSampleQuestions();
 
 // --- SSE clients ---
-const clients = { admin: new Set(), display: new Set() };
+const clients = { admin: new Set(), display: new Set(), vote: new Set() };
 
 function broadcast(channel, eventName, data) {
   const msg = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -84,6 +84,7 @@ function broadcast(channel, eventName, data) {
 function broadcastAll(eventName, data) {
   broadcast('admin', eventName, data);
   broadcast('display', eventName, data);
+  broadcast('vote', eventName, data);
 }
 
 // --- Helpers ---
@@ -185,6 +186,22 @@ const server = http.createServer(async (req, res) => {
       try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingDisplay); }
     }, 20000);
     req.on('close', () => { clients.display.delete(res); clearInterval(pingDisplay); });
+    return;
+  }
+
+  if (pathname === '/events/vote') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN
+    });
+    clients.vote.add(res);
+    res.write(`event: init\ndata: ${JSON.stringify(getDisplayState())}\n\n`);
+    const pingVote = setInterval(() => {
+      try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingVote); }
+    }, 20000);
+    req.on('close', () => { clients.vote.delete(res); clearInterval(pingVote); });
     return;
   }
 
