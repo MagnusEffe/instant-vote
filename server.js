@@ -31,24 +31,24 @@ function saveState() {
 
 const SAMPLE_QUESTIONS = [
   {
-    title: "Comment évaluez-vous cette présentation ?",
-    options: ["Excellente", "Bonne", "Moyenne", "À améliorer"]
+    title: "Concernant les équations de Bernoulli…",
+    options: ["Il y a un tuyau qui fuit ?", "Haaa, les fluides incompressibles…", "C'est une marque de pâtes", "Je préfère Navier-Stokes."]
   },
   {
-    title: "Quel format de réunion préférez-vous ?",
-    options: ["En présentiel", "En visioconférence", "Format hybride", "Peu importe"]
+    title: "Prolégomènes à une phénoménologie descriptive",
+    options: ["C'est pas de Husserl ?", "Hein ???", "Ok, next !"]
   },
   {
-    title: "Quelle est votre priorité pour le prochain trimestre ?",
-    options: ["Croissance commerciale", "Amélioration des processus", "Formation des équipes", "Innovation produit"]
+    title: "La covalence de la liaison carbone-oxygène",
+    options: ["Pour", "Contre", "Ni pour ni contre, bien au contraire"]
   },
   {
-    title: "Êtes-vous favorable à ce projet ?",
-    options: ["Tout à fait favorable", "Plutôt favorable", "Plutôt défavorable", "Tout à fait défavorable"]
+    title: "Destination de l'anneau unique",
+    options: ["Montagne du Destin", "Minas Tirith", "Fond de l'océan", "Tom Bombadil"]
   },
   {
-    title: "Quand souhaitez-vous tenir la prochaine réunion ?",
-    options: ["Cette semaine", "La semaine prochaine", "Dans 15 jours", "Dans un mois"]
+    title: "Une bataille pour Batman ?",
+    options: ["Bat-battle", "Bat-baston", "Bat-battez-vous"]
   }
 ];
 
