@@ -5,116 +5,125 @@ const path = require('path');
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data.json');
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'instantvote';
 
-// --- State ---
-let state = {
-  questions: [],
-  activeVote: null,   // { questionId, startedAt }
-  pinnedResult: null, // questionId manually pinned for display
-  multiVote: false,   // true = plusieurs votes par appareil autorisés
-  votes: {},          // { questionId: { optionIndex: count } }
-  voterIPs: {}        // { questionId: Set<ip> } — non persisté
-};
+// ── SAMPLE QUESTIONS ─────────────────────────────────────────────────────────
+const SAMPLE_QUESTIONS = [
+  { title: "Concernant les équations de Bernoulli…",       options: ["Il y a un tuyau qui fuit ?", "Haaa, les fluides incompressibles…", "C'est une marque de pâtes", "Je préfère Navier-Stokes."] },
+  { title: "Prolégomènes à une phénoménologie descriptive", options: ["C'est pas de Husserl ?", "Hein ???", "Ok, next !"] },
+  { title: "La covalence de la liaison carbone-oxygène",    options: ["Pour", "Contre", "Ni pour ni contre, bien au contraire"] },
+  { title: "Destination de l'anneau unique",                options: ["Montagne du Destin", "Minas Tirith", "Fond de l'océan", "Tom Bombadil"] },
+  { title: "Une bataille pour Batman ?",                    options: ["Bat-battle", "Bat-baston", "Bat-battez-vous"] }
+];
 
-function loadState() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      state = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    }
-  } catch (e) { console.error('Load error:', e.message); }
+function makeSampleQuestions() {
+  const now = new Date().toISOString();
+  return SAMPLE_QUESTIONS.map((q, i) => ({
+    id: (Date.now() + i).toString(),
+    title: q.title, options: q.options,
+    createdAt: now, endedAt: null, startedAt: null, hasResults: false
+  }));
 }
 
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let state = { rooms: {} };
+
+function newRoom(name) {
+  const slug = slugify(name) + '-' + Date.now().toString(36);
+  const room = {
+    id: slug, slug, name,
+    questions: makeSampleQuestions(),
+    activeVote: null, pinnedResult: null, multiVote: false,
+    votes: {}, createdAt: new Date().toISOString()
+  };
+  return room;
+}
+
+function slugify(str) {
+  return str.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'salle';
+}
+
+// ── PERSIST ───────────────────────────────────────────────────────────────────
+function loadState() {
+  try {
+    if (fs.existsSync(DATA_FILE)) state = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    if (!state.rooms) state.rooms = {};
+  } catch (e) { console.error('Load error:', e.message); }
+}
 function saveState() {
   try { fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2)); }
   catch (e) { console.error('Save error:', e.message); }
 }
+loadState();
+// voterIPs est en mémoire uniquement
+const voterIPs = {}; // { slug: { questionId: Set<ip> } }
 
-const SAMPLE_QUESTIONS = [
-  {
-    title: "Concernant les équations de Bernoulli…",
-    options: ["Il y a un tuyau qui fuit ?", "Haaa, les fluides incompressibles…", "C'est une marque de pâtes", "Je préfère Navier-Stokes."]
-  },
-  {
-    title: "Prolégomènes à une phénoménologie descriptive",
-    options: ["C'est pas de Husserl ?", "Hein ???", "Ok, next !"]
-  },
-  {
-    title: "La covalence de la liaison carbone-oxygène",
-    options: ["Pour", "Contre", "Ni pour ni contre, bien au contraire"]
-  },
-  {
-    title: "Destination de l'anneau unique",
-    options: ["Montagne du Destin", "Minas Tirith", "Fond de l'océan", "Tom Bombadil"]
-  },
-  {
-    title: "Une bataille pour Batman ?",
-    options: ["Bat-battle", "Bat-baston", "Bat-battez-vous"]
-  }
-];
+// ── SSE CLIENTS ───────────────────────────────────────────────────────────────
+// clients[type][slug] = Set<res>
+const clients = { admin: {}, display: {}, vote: {} };
 
-function initSampleQuestions() {
-  const now = new Date().toISOString();
-  state.questions = SAMPLE_QUESTIONS.map((q, i) => ({
-    id: (Date.now() + i).toString(),
-    title: q.title,
-    options: q.options,
-    createdAt: now,
-    endedAt: null,
-    startedAt: null,
-    hasResults: false
-  }));
-  saveState();
+function getClients(type, slug) {
+  if (!clients[type][slug]) clients[type][slug] = new Set();
+  return clients[type][slug];
 }
 
-loadState();
-// voterIPs n'est pas persisté — réinitialiser au démarrage
-state.voterIPs = {};
-if (state.questions.length === 0) initSampleQuestions();
-
-// --- SSE clients ---
-const clients = { admin: new Set(), display: new Set(), vote: new Set() };
-
-function broadcast(channel, eventName, data) {
+function broadcast(type, slug, eventName, data) {
   const msg = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const res of clients[channel]) {
+  for (const res of getClients(type, slug)) {
     try { res.write(msg); } catch (_) {}
   }
 }
-
-function broadcastAll(eventName, data) {
-  broadcast('admin', eventName, data);
-  broadcast('display', eventName, data);
-  broadcast('vote', eventName, data);
+function broadcastAll(slug, eventName, data) {
+  broadcast('admin', slug, eventName, data);
+  broadcast('display', slug, eventName, data);
+  broadcast('vote', slug, eventName, data);
 }
 
-// --- Helpers ---
-function getVoteSummary(questionId) {
-  const q = state.questions.find(q => q.id === questionId);
-  if (!q) return null;
-  const voteCounts = state.votes[questionId] || {};
-  const total = Object.values(voteCounts).reduce((a, b) => a + b, 0);
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function getRoom(slug) { return state.rooms[slug]; }
+
+function getVoteSummary(slug, questionId) {
+  const room = getRoom(slug); if (!room) return null;
+  const q = room.questions.find(q => q.id === questionId); if (!q) return null;
+  const vc = room.votes[questionId] || {};
+  const total = Object.values(vc).reduce((a, b) => a + b, 0);
   return {
-    questionId,
-    title: q.title,
-    options: q.options.map((opt, i) => ({
-      text: opt,
-      count: voteCounts[i] || 0,
-      pct: total > 0 ? Math.round(((voteCounts[i] || 0) / total) * 100) : 0
-    })),
-    total,
-    endedAt: q.endedAt || null,
-    startedAt: q.startedAt || null
+    questionId, title: q.title,
+    options: q.options.map((text, i) => ({ text, count: vc[i] || 0, pct: total > 0 ? Math.round(((vc[i] || 0) / total) * 100) : 0 })),
+    total, endedAt: q.endedAt || null, startedAt: q.startedAt || null
   };
+}
+
+function getFullState(slug) {
+  const room = getRoom(slug); if (!room) return null;
+  return {
+    name: room.name, slug: room.slug,
+    questions: room.questions,
+    activeVote: room.activeVote,
+    activeSummary: room.activeVote ? getVoteSummary(slug, room.activeVote.questionId) : null,
+    pinnedResult: room.pinnedResult || null,
+    multiVote: room.multiVote || false
+  };
+}
+
+function getDisplayState(slug) {
+  const room = getRoom(slug); if (!room) return { mode: 'idle', multiVote: false };
+  const base = { multiVote: room.multiVote || false, roomName: room.name };
+  if (room.activeVote) return { ...base, mode: 'vote', summary: getVoteSummary(slug, room.activeVote.questionId) };
+  if (room.pinnedResult) {
+    const s = getVoteSummary(slug, room.pinnedResult);
+    if (s) return { ...base, mode: 'result', summary: s };
+  }
+  return { ...base, mode: 'idle' };
 }
 
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try { resolve(JSON.parse(body || '{}')); }
-      catch (e) { reject(e); }
-    });
+    req.on('data', c => body += c);
+    req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch (e) { reject(e); } });
   });
 }
 
@@ -123,28 +132,20 @@ function sendJSON(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function serveFile(res, filePath, contentType) {
-  try {
-    const data = fs.readFileSync(filePath);
-    res.writeHead(200, { 'Content-Type': contentType });
-    res.end(data);
-  } catch (_) {
-    res.writeHead(404); res.end('Not found');
-  }
+function sseEndpoint(res, slug, type) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive', 'Access-Control-Allow-Origin': ALLOWED_ORIGIN
+  });
+  const set = getClients(type, slug);
+  set.add(res);
+  const initData = type === 'admin' ? getFullState(slug) : getDisplayState(slug);
+  res.write(`event: init\ndata: ${JSON.stringify(initData)}\n\n`);
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) { clearInterval(ping); } }, 20000);
+  req.on('close', () => { set.delete(res); clearInterval(ping); });
 }
 
-// --- MIME types ---
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js':   'application/javascript',
-  '.json': 'application/json',
-  '.css':  'text/css',
-  '.png':  'image/png',
-  '.ico':  'image/x-icon',
-  '.webmanifest': 'application/manifest+json'
-};
-
-// --- HTTP Server ---
+// ── HTTP SERVER ───────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, 'http://localhost');
   const pathname = parsed.pathname;
@@ -152,251 +153,176 @@ const server = http.createServer(async (req, res) => {
 
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Vary', 'Origin');
   if (method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
-  // --- SSE Endpoints ---
-  if (pathname === '/events/admin') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': ALLOWED_ORIGIN
-    });
-    clients.admin.add(res);
-    res.write(`event: init\ndata: ${JSON.stringify(getFullState())}\n\n`);
-    const pingAdmin = setInterval(() => {
-      try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingAdmin); }
-    }, 20000);
-    req.on('close', () => { clients.admin.delete(res); clearInterval(pingAdmin); });
-    return;
-  }
-
-  if (pathname === '/events/display') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': ALLOWED_ORIGIN
-    });
-    clients.display.add(res);
-    res.write(`event: init\ndata: ${JSON.stringify(getDisplayState())}\n\n`);
-    const pingDisplay = setInterval(() => {
-      try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingDisplay); }
-    }, 20000);
-    req.on('close', () => { clients.display.delete(res); clearInterval(pingDisplay); });
-    return;
-  }
-
-  if (pathname === '/events/vote') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': ALLOWED_ORIGIN
-    });
-    clients.vote.add(res);
-    res.write(`event: init\ndata: ${JSON.stringify(getDisplayState())}\n\n`);
-    const pingVote = setInterval(() => {
-      try { res.write(': ping\n\n'); } catch (_) { clearInterval(pingVote); }
-    }, 20000);
-    req.on('close', () => { clients.vote.delete(res); clearInterval(pingVote); });
-    return;
-  }
-
-  // --- API Routes ---
-  if (pathname === '/api/questions' && method === 'GET') {
-    return sendJSON(res, 200, state.questions);
-  }
-
-  if (pathname === '/api/questions' && method === 'POST') {
+  // ── AUTH ──
+  if (pathname === '/api/auth' && method === 'POST') {
     const body = await parseBody(req);
-    const q = {
-      id: Date.now().toString(),
-      title: (body.title || '').trim(),
-      options: (body.options || []).map(o => o.trim()).filter(Boolean),
-      createdAt: new Date().toISOString(),
-      endedAt: null,
-      startedAt: null
-    };
-    state.questions.push(q);
-    saveState();
-    broadcastAll('questions', state.questions);
-    return sendJSON(res, 201, q);
+    const ok = body.password === ADMIN_PASSWORD;
+    return sendJSON(res, ok ? 200 : 401, { ok });
   }
 
-  if (pathname.startsWith('/api/questions/') && method === 'PUT') {
-    const id = pathname.split('/')[3];
+  // ── SSE ──
+  const sseMatch = pathname.match(/^\/events\/(admin|display|vote)\/(.+)$/);
+  if (sseMatch) {
+    const [, type, slug] = sseMatch;
+    if (!getRoom(slug)) return sendJSON(res, 404, { error: 'Room not found' });
+    return sseEndpoint(res, slug, type);
+  }
+
+  // ── ROOMS ──
+  if (pathname === '/api/rooms' && method === 'GET') {
+    return sendJSON(res, 200, Object.values(state.rooms).map(r => ({ slug: r.slug, name: r.name, createdAt: r.createdAt, questionCount: r.questions.length })));
+  }
+
+  if (pathname === '/api/rooms' && method === 'POST') {
     const body = await parseBody(req);
-    const idx = state.questions.findIndex(q => q.id === id);
-    if (idx === -1) return sendJSON(res, 404, { error: 'Not found' });
-    state.questions[idx] = { ...state.questions[idx], ...body, id };
+    const name = (body.name || '').trim();
+    if (!name) return sendJSON(res, 400, { error: 'Name required' });
+    const room = newRoom(name);
+    state.rooms[room.slug] = room;
     saveState();
-    broadcastAll('questions', state.questions);
-    return sendJSON(res, 200, state.questions[idx]);
+    return sendJSON(res, 201, { slug: room.slug, name: room.name });
   }
 
-  if (pathname.startsWith('/api/questions/') && method === 'DELETE') {
-    const id = pathname.split('/')[3];
-    state.questions = state.questions.filter(q => q.id !== id);
-    if (state.activeVote && state.activeVote.questionId === id) state.activeVote = null;
-    saveState();
-    broadcastAll('questions', state.questions);
-    return sendJSON(res, 200, { ok: true });
-  }
+  const roomMatch = pathname.match(/^\/api\/rooms\/([^/]+)(\/.*)?$/);
+  if (roomMatch) {
+    const slug = roomMatch[1];
+    const sub = roomMatch[2] || '';
+    const room = getRoom(slug);
+    if (!room) return sendJSON(res, 404, { error: 'Room not found' });
 
-  if (pathname.startsWith('/api/questions/') && pathname.endsWith('/reorder') && method === 'POST') {
-    const body = await parseBody(req);
-    const { order } = body; // array of ids
-    if (Array.isArray(order)) {
-      state.questions.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-      saveState();
-      broadcastAll('questions', state.questions);
+    // Renommer/supprimer la salle
+    if (sub === '' && method === 'PUT') {
+      const body = await parseBody(req);
+      if (body.name) { room.name = body.name.trim(); saveState(); broadcastAll(slug, 'roomRenamed', { name: room.name }); }
+      return sendJSON(res, 200, { slug, name: room.name });
     }
-    return sendJSON(res, 200, { ok: true });
-  }
-
-  if (pathname === '/api/reorder' && method === 'POST') {
-    const body = await parseBody(req);
-    const { order } = body;
-    if (Array.isArray(order)) {
-      state.questions.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-      saveState();
-      broadcastAll('questions', state.questions);
+    if (sub === '' && method === 'DELETE') {
+      delete state.rooms[slug]; saveState();
+      return sendJSON(res, 200, { ok: true });
     }
-    return sendJSON(res, 200, { ok: true });
-  }
 
-  if (pathname === '/api/vote/start' && method === 'POST') {
-    const body = await parseBody(req);
-    const { questionId } = body;
-    const q = state.questions.find(q => q.id === questionId);
-    if (!q) return sendJSON(res, 404, { error: 'Not found' });
-    state.activeVote = { questionId, startedAt: new Date().toISOString() };
-    q.startedAt = state.activeVote.startedAt;
-    q.endedAt = null;
-    q.hasResults = false;
-    // Effacer les votes précédents et les IPs enregistrées
-    state.votes[questionId] = {};
-    state.voterIPs[questionId] = new Set();
-    // Dépingler si cette question était affichée
-    if (state.pinnedResult === questionId) state.pinnedResult = null;
-    saveState();
-    broadcastAll('voteStart', { question: q, summary: getVoteSummary(questionId) });
-    return sendJSON(res, 200, { ok: true });
-  }
+    // State
+    if (sub === '/state' && method === 'GET') return sendJSON(res, 200, getFullState(slug));
+    if (sub === '/display' && method === 'GET') return sendJSON(res, 200, getDisplayState(slug));
 
-  if (pathname === '/api/vote/end' && method === 'POST') {
-    if (!state.activeVote) return sendJSON(res, 400, { error: 'No active vote' });
-    const { questionId } = state.activeVote;
-    const q = state.questions.find(q => q.id === questionId);
-    if (q) {
-      q.endedAt = new Date().toISOString();
-      q.hasResults = true;
+    // Questions
+    if (sub === '/questions' && method === 'GET') return sendJSON(res, 200, room.questions);
+    if (sub === '/questions' && method === 'POST') {
+      const body = await parseBody(req);
+      const q = { id: Date.now().toString(), title: (body.title||'').trim(), options: (body.options||[]).map(o=>o.trim()).filter(Boolean), createdAt: new Date().toISOString(), endedAt: null, startedAt: null, hasResults: false };
+      room.questions.push(q); saveState();
+      broadcastAll(slug, 'questions', room.questions);
+      return sendJSON(res, 201, q);
     }
-    state.activeVote = null;
-    // Épingler automatiquement la question sur l'affichage
-    state.pinnedResult = questionId;
-    saveState();
-    const summary = getVoteSummary(questionId);
-    broadcastAll('voteEnd', { summary });
-    broadcast('admin', 'pinned', { pinnedResult: state.pinnedResult });
-    broadcast('display', 'init', getDisplayState());
-    return sendJSON(res, 200, summary);
-  }
 
-  if (pathname === '/api/vote/cast' && method === 'POST') {
-    const body = await parseBody(req);
-    const { optionIndex } = body;
-    if (!state.activeVote) return sendJSON(res, 400, { error: 'No active vote' });
-    const { questionId } = state.activeVote;
-    // Contrôle anti-double-vote par IP (mode vote unique)
-    if (!state.multiVote) {
-      const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-      if (!state.voterIPs[questionId]) state.voterIPs[questionId] = new Set();
-      if (state.voterIPs[questionId].has(ip)) {
-        return sendJSON(res, 429, { error: 'already_voted' });
+    const qMatch = sub.match(/^\/questions\/([^/]+)$/);
+    if (qMatch) {
+      const qid = qMatch[1];
+      if (method === 'PUT') {
+        const body = await parseBody(req);
+        const idx = room.questions.findIndex(q => q.id === qid);
+        if (idx === -1) return sendJSON(res, 404, { error: 'Not found' });
+        room.questions[idx] = { ...room.questions[idx], ...body, id: qid };
+        saveState(); broadcastAll(slug, 'questions', room.questions);
+        return sendJSON(res, 200, room.questions[idx]);
       }
-      state.voterIPs[questionId].add(ip);
+      if (method === 'DELETE') {
+        room.questions = room.questions.filter(q => q.id !== qid);
+        if (room.activeVote?.questionId === qid) room.activeVote = null;
+        saveState(); broadcastAll(slug, 'questions', room.questions);
+        return sendJSON(res, 200, { ok: true });
+      }
     }
-    if (!state.votes[questionId]) state.votes[questionId] = {};
-    state.votes[questionId][optionIndex] = (state.votes[questionId][optionIndex] || 0) + 1;
-    saveState();
-    const summary = getVoteSummary(questionId);
-    broadcastAll('voteUpdate', summary);
-    return sendJSON(res, 200, { ok: true });
-  }
 
-  if (pathname === '/api/state' && method === 'GET') {
-    return sendJSON(res, 200, getFullState());
-  }
-
-  if (pathname === '/api/display' && method === 'GET') {
-    return sendJSON(res, 200, getDisplayState());
-  }
-
-  if (pathname === '/api/results' && method === 'GET') {
-    const results = {};
-    for (const q of state.questions) {
-      if (q.hasResults) results[q.id] = getVoteSummary(q.id);
+    if (sub === '/reorder' && method === 'POST') {
+      const body = await parseBody(req);
+      if (Array.isArray(body.order)) { room.questions.sort((a, b) => body.order.indexOf(a.id) - body.order.indexOf(b.id)); saveState(); broadcastAll(slug, 'questions', room.questions); }
+      return sendJSON(res, 200, { ok: true });
     }
-    return sendJSON(res, 200, results);
-  }
 
-  if (pathname === '/api/multivote' && method === 'POST') {
-    const body = await parseBody(req);
-    state.multiVote = !!body.enabled;
-    saveState();
-    broadcastAll('settings', { multiVote: state.multiVote });
-    return sendJSON(res, 200, { multiVote: state.multiVote });
-  }
-
-  if (pathname === '/api/display/pin' && method === 'POST') {
-    const body = await parseBody(req);
-    const { questionId } = body;
-    // Toggle : if same question already pinned, unpin
-    if (state.pinnedResult === questionId) {
-      state.pinnedResult = null;
-    } else {
-      state.pinnedResult = questionId || null;
+    // Vote
+    if (sub === '/vote/start' && method === 'POST') {
+      const body = await parseBody(req);
+      const q = room.questions.find(q => q.id === body.questionId);
+      if (!q) return sendJSON(res, 404, { error: 'Not found' });
+      room.activeVote = { questionId: q.id, startedAt: new Date().toISOString() };
+      q.startedAt = room.activeVote.startedAt; q.endedAt = null; q.hasResults = false;
+      room.votes[q.id] = {};
+      if (!voterIPs[slug]) voterIPs[slug] = {};
+      voterIPs[slug][q.id] = new Set();
+      if (room.pinnedResult === q.id) room.pinnedResult = null;
+      saveState();
+      broadcastAll(slug, 'voteStart', { question: q, summary: getVoteSummary(slug, q.id) });
+      return sendJSON(res, 200, { ok: true });
     }
-    saveState();
-    broadcast('display', 'init', getDisplayState());
-    broadcast('admin', 'pinned', { pinnedResult: state.pinnedResult });
-    return sendJSON(res, 200, { pinnedResult: state.pinnedResult });
+
+    if (sub === '/vote/end' && method === 'POST') {
+      if (!room.activeVote) return sendJSON(res, 400, { error: 'No active vote' });
+      const qid = room.activeVote.questionId;
+      const q = room.questions.find(q => q.id === qid);
+      if (q) { q.endedAt = new Date().toISOString(); q.hasResults = true; }
+      room.activeVote = null;
+      room.pinnedResult = qid;
+      saveState();
+      const summary = getVoteSummary(slug, qid);
+      broadcastAll(slug, 'voteEnd', { summary });
+      broadcast('admin', slug, 'pinned', { pinnedResult: room.pinnedResult });
+      broadcast('display', slug, 'init', getDisplayState(slug));
+      broadcast('vote', slug, 'init', getDisplayState(slug));
+      return sendJSON(res, 200, summary);
+    }
+
+    if (sub === '/vote/cast' && method === 'POST') {
+      const body = await parseBody(req);
+      if (!room.activeVote) return sendJSON(res, 400, { error: 'No active vote' });
+      const qid = room.activeVote.questionId;
+      if (!room.multiVote) {
+        const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+        if (!voterIPs[slug]) voterIPs[slug] = {};
+        if (!voterIPs[slug][qid]) voterIPs[slug][qid] = new Set();
+        if (voterIPs[slug][qid].has(ip)) return sendJSON(res, 429, { error: 'already_voted' });
+        voterIPs[slug][qid].add(ip);
+      }
+      if (!room.votes[qid]) room.votes[qid] = {};
+      room.votes[qid][body.optionIndex] = (room.votes[qid][body.optionIndex] || 0) + 1;
+      saveState();
+      const summary = getVoteSummary(slug, qid);
+      broadcastAll(slug, 'voteUpdate', summary);
+      return sendJSON(res, 200, { ok: true });
+    }
+
+    if (sub === '/display/pin' && method === 'POST') {
+      const body = await parseBody(req);
+      room.pinnedResult = room.pinnedResult === body.questionId ? null : (body.questionId || null);
+      saveState();
+      broadcast('display', slug, 'init', getDisplayState(slug));
+      broadcast('vote', slug, 'init', getDisplayState(slug));
+      broadcast('admin', slug, 'pinned', { pinnedResult: room.pinnedResult });
+      return sendJSON(res, 200, { pinnedResult: room.pinnedResult });
+    }
+
+    if (sub === '/multivote' && method === 'POST') {
+      const body = await parseBody(req);
+      room.multiVote = !!body.enabled; saveState();
+      broadcastAll(slug, 'settings', { multiVote: room.multiVote });
+      return sendJSON(res, 200, { multiVote: room.multiVote });
+    }
+
+    if (sub === '/results' && method === 'GET') {
+      const results = {};
+      for (const q of room.questions) { if (q.hasResults) results[q.id] = getVoteSummary(slug, q.id); }
+      return sendJSON(res, 200, results);
+    }
   }
 
-  // Route inconnue
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-function getFullState() {
-  return {
-    questions: state.questions,
-    activeVote: state.activeVote,
-    activeSummary: state.activeVote ? getVoteSummary(state.activeVote.questionId) : null,
-    pinnedResult: state.pinnedResult || null,
-    multiVote: state.multiVote || false
-  };
-}
-
-function getDisplayState() {
-  const base = { multiVote: state.multiVote || false };
-  if (state.activeVote) {
-    return { ...base, mode: 'vote', summary: getVoteSummary(state.activeVote.questionId) };
-  }
-  if (state.pinnedResult) {
-    const s = getVoteSummary(state.pinnedResult);
-    if (s) return { ...base, mode: 'result', summary: s };
-  }
-  return { ...base, mode: 'idle' };
-}
-
 server.listen(PORT, () => {
   console.log(`Instant Vote running on http://localhost:${PORT}`);
-  console.log(`Admin:   http://localhost:${PORT}/admin`);
-  console.log(`Display: http://localhost:${PORT}/display`);
-  console.log(`Vote:    http://localhost:${PORT}/vote`);
 });
