@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'data.json');
+const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'data.json');
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'instantvote';
 
@@ -57,6 +57,16 @@ function saveState() {
   catch (e) { console.error('Save error:', e.message); }
 }
 loadState();
+
+// Si aucune salle n'existe (premier démarrage ou filesystem éphémère Render),
+// créer une salle de démonstration par défaut
+if (Object.keys(state.rooms).length === 0) {
+  const demo = newRoom('Salle de démonstration');
+  state.rooms[demo.slug] = demo;
+  saveState();
+  console.log(`Salle par défaut créée : ${demo.slug}`);
+}
+
 // voterIPs est en mémoire uniquement
 const voterIPs = {}; // { slug: { questionId: Set<ip> } }
 
