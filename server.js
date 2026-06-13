@@ -1,9 +1,8 @@
 const http = require('http');
-const fs = require('fs');
+const https = require('https');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'data.json');
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'instantvote';
 
@@ -46,29 +45,97 @@ function slugify(str) {
 }
 
 // ── PERSIST ───────────────────────────────────────────────────────────────────
-function loadState() {
-  try {
-    if (fs.existsSync(DATA_FILE)) state = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+const JSONBIN_ID  = process.env.JSONBIN_ID  || '';
+const JSONBIN_KEY = process.env.JSONBIN_KEY || '';
+const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_ID}`;
+
+// File local en fallback si JSONBin non configuré
+const fs   = require('fs');
+const path2 = require('path');
+const LOCAL_FILE = path2.join(__dirname, 'data.json');
+
+function jsonbinRequest(method, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const options = {
+      hostname: 'api.jsonbin.io',
+      path: `/v3/b/${JSONBIN_ID}`,
+      method,
+      headers: {
+        'X-Master-Key': JSONBIN_KEY,
+        'Content-Type': 'application/json',
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {})
+      }
+    };
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch(e) { reject(e); } });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function loadState() {
+  if (!JSONBIN_ID || !JSONBIN_KEY) {
+    // Fallback local
+    try { if (fs.existsSync(LOCAL_FILE)) state = JSON.parse(fs.readFileSync(LOCAL_FILE, 'utf8')); } catch(e) {}
     if (!state.rooms) state.rooms = {};
-  } catch (e) { console.error('Load error:', e.message); }
+    return;
+  }
+  try {
+    const res = await jsonbinRequest('GET');
+    if (res.record && res.record.rooms) {
+      state = res.record;
+    }
+    if (!state.rooms) state.rooms = {};
+    console.log(`JSONBin: ${Object.keys(state.rooms).length} salle(s) chargée(s)`);
+  } catch(e) {
+    console.error('JSONBin load error:', e.message);
+    if (!state.rooms) state.rooms = {};
+  }
 }
+
+// Debounce saveState pour éviter trop d'appels simultanés (limite JSONBin)
+let saveTimer = null;
 function saveState() {
-  try { fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2)); }
-  catch (e) { console.error('Save error:', e.message); }
+  if (!JSONBIN_ID || !JSONBIN_KEY) {
+    // Fallback local
+    try { fs.writeFileSync(LOCAL_FILE, JSON.stringify(state, null, 2)); } catch(e) {}
+    return;
+  }
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await jsonbinRequest('PUT', state);
+    } catch(e) {
+      console.error('JSONBin save error:', e.message);
+    }
+  }, 300); // attend 300ms pour grouper les sauvegardes rapprochées
 }
-loadState();
-
-// Si aucune salle n'existe (premier démarrage ou filesystem éphémère Render),
-// créer une salle de démonstration par défaut
-if (Object.keys(state.rooms).length === 0) {
-  const demo = newRoom('Salle de démonstration');
-  state.rooms[demo.slug] = demo;
-  saveState();
-  console.log(`Salle par défaut créée : ${demo.slug}`);
-}
-
 // voterIPs est en mémoire uniquement
 const voterIPs = {}; // { slug: { questionId: Set<ip> } }
+
+// Démarrage async : charger l'état puis lancer le serveur
+loadState().then(() => {
+  if (Object.keys(state.rooms).length === 0) {
+    const demo = newRoom('Salle de démonstration');
+    state.rooms[demo.slug] = demo;
+    saveState();
+    console.log(`Salle par défaut créée : ${demo.slug}`);
+  }
+  server.listen(PORT, () => {
+    console.log(`Instant Vote running on http://localhost:${PORT}`);
+  });
+}).catch(e => {
+  console.error('Startup error:', e);
+  // Démarrer quand même avec état vide
+  server.listen(PORT, () => {
+    console.log(`Instant Vote running on http://localhost:${PORT} (sans persistance)`);
+  });
+});
 
 // ── SSE CLIENTS ───────────────────────────────────────────────────────────────
 // clients[type][slug] = Set<res>
@@ -333,6 +400,4 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-server.listen(PORT, () => {
-  console.log(`Instant Vote running on http://localhost:${PORT}`);
-});
+// (server.listen géré dans loadState().then)
