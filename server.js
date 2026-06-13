@@ -228,9 +228,13 @@ const server = http.createServer(async (req, res) => {
     if (sub==='/vote/end'&&method==='POST') {
       if(!room.activeVote)return sendJSON(res,400,{error:'No active vote'});
       const qid=room.activeVote.questionId; const q=room.questions.find(q=>q.id===qid);
-      if(q){q.endedAt=new Date().toISOString();q.hasResults=true;}
-      room.activeVote=null; room.pinnedResult=qid; saveState();
       const summary=getVoteSummary(slug,qid);
+      const hasVotes = summary && summary.total > 0;
+      if(q){ q.endedAt=new Date().toISOString(); q.hasResults=hasVotes; }
+      room.activeVote=null;
+      // N'épingler sur l'affichage que si des votes ont été exprimés
+      room.pinnedResult = hasVotes ? qid : null;
+      saveState();
       broadcastAll(slug,'voteEnd',{summary});
       broadcast('admin',slug,'pinned',{pinnedResult:room.pinnedResult});
       broadcast('display',slug,'init',getDisplayState(slug));
