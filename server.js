@@ -30,7 +30,7 @@ function slugify(str) {
 
 function newRoom(name) {
   const slug = slugify(name) + '-' + Date.now().toString(36);
-  return { id: slug, slug, name, questions: makeSampleQuestions(), activeVote: null, pinnedResult: null, multiVote: false, votes: {}, createdAt: new Date().toISOString() };
+  return { id: slug, slug, name, questions: makeSampleQuestions(), activeVote: null, pinnedResult: null, multiVote: false, showDetail: true, votes: {}, createdAt: new Date().toISOString() };
 }
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
@@ -113,12 +113,12 @@ function getVoteSummary(slug, questionId) {
 
 function getFullState(slug) {
   const room = getRoom(slug); if (!room) return null;
-  return { name: room.name, slug: room.slug, questions: room.questions, activeVote: room.activeVote, activeSummary: room.activeVote ? getVoteSummary(slug, room.activeVote.questionId) : null, pinnedResult: room.pinnedResult||null, multiVote: room.multiVote||false };
+  return { name: room.name, slug: room.slug, questions: room.questions, activeVote: room.activeVote, activeSummary: room.activeVote ? getVoteSummary(slug, room.activeVote.questionId) : null, pinnedResult: room.pinnedResult||null, multiVote: room.multiVote||false, showDetail: room.showDetail !== false };
 }
 
 function getDisplayState(slug) {
   const room = getRoom(slug); if (!room) return { mode:'idle', multiVote:false };
-  const base = { multiVote: room.multiVote||false, roomName: room.name };
+  const base = { multiVote: room.multiVote||false, showDetail: room.showDetail !== false, roomName: room.name };
   if (room.activeVote) return { ...base, mode:'vote', summary: getVoteSummary(slug, room.activeVote.questionId) };
   if (room.pinnedResult) { const s = getVoteSummary(slug, room.pinnedResult); if (s) return { ...base, mode:'result', summary:s }; }
   return { ...base, mode:'idle' };
@@ -272,8 +272,14 @@ const server = http.createServer(async (req, res) => {
     if (sub==='/multivote'&&method==='POST') {
       const body=await parseBody(req);
       room.multiVote=!!body.enabled; saveState();
-      broadcastAll(slug,'settings',{multiVote:room.multiVote});
+      broadcastAll(slug,'settings',{multiVote:room.multiVote,showDetail:room.showDetail!==false});
       return sendJSON(res,200,{multiVote:room.multiVote});
+    }
+    if (sub==='/showdetail'&&method==='POST') {
+      const body=await parseBody(req);
+      room.showDetail=!!body.enabled; saveState();
+      broadcastAll(slug,'settings',{multiVote:room.multiVote,showDetail:room.showDetail});
+      return sendJSON(res,200,{showDetail:room.showDetail});
     }
   }
 
